@@ -5,7 +5,7 @@ use obws::{
     responses::{inputs::Input, outputs::Output},
     Client,
 };
-use std::thread;
+use std::{net::IpAddr, thread};
 
 fn main() -> Result<()> {
     let (action_tx, mut action_rx) = tokio::sync::mpsc::channel::<Action>(10);
@@ -16,45 +16,50 @@ fn main() -> Result<()> {
             .build()
             .expect("failed to build runtime");
         rt.block_on(async {
-            let obs_client = Client::connect("localhost", 4455, Some("test1234"))
-                .await
-                .expect("failed to connect to obs");
-            let input_info = obs_client
-                .inputs()
-                .list(None)
-                .await
-                .expect("failed to get input info");
-            let output_info = obs_client
-                .outputs()
-                .list()
-                .await
-                .expect("failed to get output info");
-
-            obs_info_tx
-                .send(ObsInfo::InputInfo(input_info))
-                .await
-                .unwrap();
-            obs_info_tx
-                .send(ObsInfo::OutputInfo(output_info))
-                .await
-                .unwrap();
+            let obs_client: Option<Client> = None;
 
             while let Some(action) = action_rx.recv().await {
                 match action {
                     Action::SetMute(name, val) => {
-                        obs_client
-                            .inputs()
-                            .set_muted(&name, val)
-                            .await
-                            .expect("failed to mute");
+                        if let Some(obs_client) = &obs_client {
+                            obs_client
+                                .inputs()
+                                .set_muted(&name, val)
+                                .await
+                                .expect("failed to mute");
+                        }
                     }
                     Action::SetVolume(name, value) => {
-                        let volume = Volume::Mul(value / 100.0);
-                        obs_client
-                            .inputs()
-                            .set_volume(&name, volume)
+                        if let Some(obs_client) = &obs_client {
+                            let volume = Volume::Mul(value / 100.0);
+                            obs_client.inputs().set_volume(&name, volume).await.expect(
+                                format!("failed to set volume for device {}", name).as_str(),
+                            );
+                        }
+                    }
+                    Action::LogIn(addr, port, pass) => {
+                        let obs_client = Client::connect(addr.to_string(), port, Some(pass))
                             .await
-                            .expect(format!("failed to set volume for device {}", name).as_str());
+                            .expect("failed to connect to obs");
+                        let input_info = obs_client
+                            .inputs()
+                            .list(None)
+                            .await
+                            .expect("failed to get input info");
+                        let output_info = obs_client
+                            .outputs()
+                            .list()
+                            .await
+                            .expect("failed to get output info");
+
+                        obs_info_tx
+                            .send(ObsInfo::InputInfo(input_info))
+                            .await
+                            .unwrap();
+                        obs_info_tx
+                            .send(ObsInfo::OutputInfo(output_info))
+                            .await
+                            .unwrap();
                     }
                 }
             }
@@ -62,7 +67,7 @@ fn main() -> Result<()> {
     });
     let native_options = eframe::NativeOptions::default();
     eframe::run_native(
-        "Test app",
+        "REC",
         native_options,
         Box::new(move |cc| Box::new(App::new(cc, action_tx.clone(), obs_info_rx))),
     )
@@ -72,6 +77,7 @@ fn main() -> Result<()> {
 }
 
 enum Action {
+    LogIn(IpAddr, u16, String),
     SetMute(String, bool),
     SetVolume(String, f32),
 }
@@ -93,6 +99,11 @@ struct App {
     desktop_level: f32,
     mic_muted: bool,
     desktop_muted: bool,
+    logged_in: bool,
+
+    addr: String,
+    port: String,
+    pass: String,
 }
 
 impl App {
@@ -112,6 +123,10 @@ impl App {
             output_info: Vec::new(),
             mic_input_name: None,
             desktop_input_name: None,
+            logged_in: false,
+            addr: String::new(),
+            port: String::new(),
+            pass: String::new(),
         }
     }
 }
@@ -131,6 +146,24 @@ impl eframe::App for App {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("OBS Control");
+            if !self.logged_in {
+                ui.vertical_centered_justified(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.addr).hint_text("Ip address"));
+                    ui.add(egui::TextEdit::singleline(&mut self.port).hint_text("Port"));
+                    ui.add(egui::TextEdit::singleline(&mut self.pass).hint_text("Password"));
+                    if ui.button("Log In").clicked() {
+                        let addr = self.addr.parse::<IpAddr>().expect("failed to parse ip");
+                        let port = self.port.parse::<u16>().expect("failed to parse port");
+                        self.action_tx
+                            .try_send(Action::LogIn(addr, port, self.pass.clone()))
+                            .expect("failed to send login action");
+                        self.logged_in = true;
+                    }
+                });
+                let label = egui::Label::new("Not Logged In");
+                ui.add(label).highlight();
+                return;
+            }
 
             egui::Grid::new("Sliders").show(ui, |ui| {
                 ui.vertical_centered_justified(|ui| {
