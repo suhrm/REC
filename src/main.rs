@@ -5,7 +5,10 @@ use obws::{
     responses::{inputs::Input, outputs::Output},
     Client,
 };
-use std::{net::IpAddr, thread};
+use std::{
+    net::{IpAddr, SocketAddr},
+    thread,
+};
 
 fn main() -> Result<()> {
     let (action_tx, mut action_rx) = tokio::sync::mpsc::channel::<Action>(10);
@@ -165,35 +168,70 @@ impl eframe::App for App {
                 return;
             }
 
+            // if !self.logged_in {
+            //     let address: SocketAddr = "127.0.0.1:4455".parse().expect("failed to parse ip");
+            //     let addr = address.ip();
+            //     let port = address.port();
+            //     self.pass = "test1234".to_string();
+            //     self.action_tx
+            //         .try_send(Action::LogIn(addr, port, self.pass.clone()))
+            //         .expect("failed to send login action");
+            //     self.logged_in = true;
+            // }
+
             egui::Grid::new("Sliders").show(ui, |ui| {
                 ui.vertical_centered_justified(|ui| {
-                    for input in &self.input_info {
-                        if !input.kind.contains("input") {
-                            continue;
-                        }
+                    egui::ComboBox::from_id_source("mic")
+                        .selected_text(
+                            self.mic_input_name
+                                .clone()
+                                .unwrap_or("Select Mic".to_string()),
+                        )
+                        .show_ui(ui, |ui| {
+                            for input in &self.input_info {
+                                if !input.kind.contains("input") {
+                                    continue;
+                                }
 
-                        ui.selectable_value(
-                            &mut self.mic_input_name,
-                            Some(input.name.clone()),
-                            input.name.clone(),
-                        );
-                    }
+                                ui.selectable_value(
+                                    &mut self.mic_input_name,
+                                    Some(input.name.clone()),
+                                    input.name.clone(),
+                                );
+                            }
+                            ui.selectable_value(
+                                &mut self.mic_input_name,
+                                None,
+                                "No Mic".to_string(),
+                            );
+                        })
                 });
-
                 ui.vertical_centered_justified(|ui| {
-                    for input in &self.input_info {
-                        if !input.kind.contains("output") {
-                            continue;
-                        }
+                    egui::ComboBox::from_id_source("desktop")
+                        .selected_text(
+                            self.desktop_input_name
+                                .clone()
+                                .unwrap_or("Select Desktop".to_string()),
+                        )
+                        .show_ui(ui, |ui| {
+                            for input in &self.input_info {
+                                if !input.kind.contains("output") {
+                                    continue;
+                                }
 
-                        ui.selectable_value(
-                            &mut self.desktop_input_name,
-                            Some(input.name.clone()),
-                            input.name.clone(),
-                        );
-                    }
+                                ui.selectable_value(
+                                    &mut self.desktop_input_name,
+                                    Some(input.name.clone()),
+                                    input.name.clone(),
+                                );
+                            }
+                            ui.selectable_value(
+                                &mut self.desktop_input_name,
+                                None,
+                                "No Desktop".to_string(),
+                            );
+                        })
                 });
-
                 ui.end_row();
 
                 if ui
@@ -206,7 +244,8 @@ impl eframe::App for App {
                 {
                     if let Some(name) = &self.mic_input_name {
                         self.action_tx
-                            .try_send(Action::SetVolume(name.clone(), self.mic_level));
+                            .try_send(Action::SetVolume(name.clone(), self.mic_level))
+                            .expect("failed to send set volume action");
                     }
                 }
 
@@ -216,19 +255,6 @@ impl eframe::App for App {
                             .text("Desktop Volume")
                             .orientation(egui::SliderOrientation::Vertical),
                     )
-                    .context_menu(|ui| {
-                        for input in &self.input_info {
-                            if !input.kind.contains("output") {
-                                continue;
-                            }
-
-                            ui.selectable_value(
-                                &mut self.desktop_input_name,
-                                Some(input.name.clone()),
-                                input.name.clone(),
-                            );
-                        }
-                    })
                     .dragged()
                 {
                     if let Some(name) = &self.desktop_input_name {
