@@ -7,10 +7,8 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.75"
-eframe = { version = "0.24.1", features = ["wgpu"] }
+eframe = { version = "0.24.1" }
 egui = "0.24.1"
 egui_plot = "0.24.1"
-egui_web = "0.17.0"
 obws = "0.11.5"
 tokio = { version = "1.35.0", features = ["full"] }
-wasm-bindgen = "0.2.89"

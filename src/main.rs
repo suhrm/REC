@@ -107,10 +107,6 @@ enum Action {
     SetVolume(String, f32),
 }
 
-struct SceneCollection {
-    name: String,
-}
-
 enum ObsInfo {
     InputInfo(Vec<Input>),
     OutputInfo(Vec<Output>),
