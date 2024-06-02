@@ -1,5 +1,4 @@
 use anyhow::Result;
-use eframe::egui;
 use obws::{
     requests::inputs::Volume,
     responses::{
@@ -8,12 +7,25 @@ use obws::{
     Client,
 };
 use std::{
+    collections::HashMap,
     net::{IpAddr, SocketAddr},
     thread,
 };
 
+use iced::{widget::container, Application, Element, Renderer, Sandbox};
+use iced_widget::{
+    button::{self, StyleSheet},
+    component, pick_list, text, Component,
+};
+
+enum ObsAction {
+    SetMute(String, bool),
+    SetVolume(String, f32),
+    LogIn(IpAddr, u16, String),
+}
+
 fn main() -> Result<()> {
-    let (action_tx, mut action_rx) = tokio::sync::mpsc::channel::<Action>(10);
+    let (action_tx, mut action_rx) = tokio::sync::mpsc::channel::<ObsAction>(10);
     let (obs_info_tx, obs_info_rx) = tokio::sync::mpsc::channel::<ObsInfo>(10);
     thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -25,7 +37,7 @@ fn main() -> Result<()> {
 
             while let Some(action) = action_rx.recv().await {
                 match action {
-                    Action::SetMute(name, val) => {
+                    ObsAction::SetMute(name, val) => {
                         if let Some(obs_client) = &obs_client {
                             obs_client
                                 .inputs()
@@ -34,7 +46,7 @@ fn main() -> Result<()> {
                                 .expect("failed to mute");
                         }
                     }
-                    Action::SetVolume(name, value) => {
+                    ObsAction::SetVolume(name, value) => {
                         if let Some(obs_client) = &obs_client {
                             let volume = Volume::Mul(value / 100.0);
                             obs_client.inputs().set_volume(&name, volume).await.expect(
@@ -42,7 +54,7 @@ fn main() -> Result<()> {
                             );
                         }
                     }
-                    Action::LogIn(addr, port, pass) => {
+                    ObsAction::LogIn(addr, port, pass) => {
                         let client = Client::connect(addr.to_string(), port, Some(pass))
                             .await
                             .expect("failed to connect to obs");
@@ -90,44 +102,57 @@ fn main() -> Result<()> {
             }
         });
     });
-    let native_options = eframe::NativeOptions::default();
-    eframe::run_native(
-        "REC",
-        native_options,
-        Box::new(move |cc| Box::new(App::new(cc, action_tx.clone(), obs_info_rx))),
-    )
-    .expect("failed to run");
-
+    App::run(iced::Settings::with_flags(AppFlags {
+        action_tx,
+        obs_info_rx,
+    }))?;
     Ok(())
 }
 
-enum Action {
-    LogIn(IpAddr, u16, String),
-    SetMute(String, bool),
-    SetVolume(String, f32),
+struct AppFlags {
+    action_tx: tokio::sync::mpsc::Sender<ObsAction>,
+    obs_info_rx: tokio::sync::mpsc::Receiver<ObsInfo>,
 }
 
-enum ObsInfo {
-    InputInfo(Vec<Input>),
-    OutputInfo(Vec<Output>),
-    SceneInfo(Scenes),
-    SceneCollectionInfo(SceneCollections),
+// #[derive(Clone)]
+// struct ObsInputSource(Input);
+// #[derive(Clone)]
+// struct ObsOutputSource(Output);
+
+// impl std::fmt::Display for ObsOutputSource {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         write!(f, "{}", self.to_string())
+//     }
+// }
+// impl std::fmt::Display for ObsInputSource {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         write!(f, "{}", self.to_string())
+//     }
+// }
+
+#[derive(Debug, Clone)]
+struct SliderState {
+    device: Option<String>,
+    level: f32,
+    muted: bool,
 }
+
+impl Default for SliderState {
+    fn default() -> Self {
+        Self {
+            device: None,
+            level: 0.0,
+            muted: true,
+        }
+    }
+}
+
 struct App {
-    action_tx: tokio::sync::mpsc::Sender<Action>,
-    obs_info_rx: tokio::sync::mpsc::Receiver<ObsInfo>,
-    input_info: Vec<Input>,
-    output_info: Vec<Output>,
+    app_flags: AppFlags,
     scene_info: Scenes,
     scene_collection_info: SceneCollections,
+    sliders: HashMap<String, SliderState>,
 
-    mic_input_name: Option<String>,
-    desktop_input_name: Option<String>,
-
-    mic_level: f32,
-    desktop_level: f32,
-    mic_muted: bool,
-    desktop_muted: bool,
     logged_in: bool,
 
     addr: String,
@@ -135,25 +160,20 @@ struct App {
     pass: String,
 }
 
+fn default_sliders() -> HashMap<String, SliderState> {
+    let mut default_map = HashMap::new();
+    default_map.insert("mic".to_string(), SliderState::default());
+    default_map.insert("desktop".to_string(), SliderState::default());
+    default_map
+}
+
 impl App {
-    fn new(
-        cc: &eframe::CreationContext<'_>,
-        action_tx: tokio::sync::mpsc::Sender<Action>,
-        obs_info_rx: tokio::sync::mpsc::Receiver<ObsInfo>,
-    ) -> Self {
-        Self {
-            action_tx,
-            obs_info_rx,
-            mic_level: 0.0,
-            desktop_level: 0.0,
-            mic_muted: false,
-            desktop_muted: false,
-            input_info: Vec::new(),
-            output_info: Vec::new(),
+    fn new(app_flags: AppFlags) -> Self {
+        App {
+            app_flags,
             scene_info: Scenes::default(),
             scene_collection_info: SceneCollections::default(),
-            mic_input_name: None,
-            desktop_input_name: None,
+            sliders: default_sliders(),
             logged_in: false,
             addr: String::new(),
             port: String::new(),
@@ -162,211 +182,210 @@ impl App {
     }
 }
 
-impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        if let Ok(obs_info) = self.obs_info_rx.try_recv() {
-            match obs_info {
-                ObsInfo::InputInfo(input_info) => {
-                    self.input_info = input_info;
+impl Application for App {
+    type Executor = iced::executor::Default;
+
+    type Message = Action;
+
+    type Theme = iced::Theme;
+
+    type Flags = AppFlags;
+
+    fn new(flags: Self::Flags) -> (Self, iced::Command<Self::Message>) {
+        (App::new(flags), iced::Command::none())
+    }
+
+    fn title(&self) -> String {
+        String::from("OBS Control")
+    }
+
+    fn update(&mut self, message: Self::Message) -> iced::Command<Self::Message> {
+        match message {
+            Action::LogIn(addr, port, pass) => {
+                iced::futures::executor::block_on(
+                    self.app_flags
+                        .action_tx
+                        .send(ObsAction::LogIn(addr, port, pass)),
+                )
+                .unwrap();
+                iced::Command::none()
+            }
+            Action::VolumeSlider((name, state_change)) => {
+                let slider = &mut self
+                    .sliders
+                    .get_mut(&name)
+                    .expect("accesing non existent slider");
+                match state_change {
+                    VolumeSliderGroupMessage::VolumeChanged(level) => {
+                        self.app_flags
+                            .action_tx
+                            .try_send(ObsAction::SetVolume(name.clone(), level))
+                            .expect("Failed to send to obs service");
+                        slider.level = level;
+                    }
+
+                    VolumeSliderGroupMessage::MuteToggled(muted) => {
+                        self.app_flags
+                            .action_tx
+                            .try_send(ObsAction::SetMute(name.clone(), muted))
+                            .expect("Failed to sendto obs service");
+                        slider.muted = muted;
+                    }
+
+                    VolumeSliderGroupMessage::DeviceSelected(device) => {
+                        slider.device = Some(device);
+                    }
                 }
-                ObsInfo::OutputInfo(output_info) => {
-                    self.output_info = output_info;
-                }
-                ObsInfo::SceneInfo(scenes_info) => {
-                    self.scene_info = scenes_info;
-                }
-                ObsInfo::SceneCollectionInfo(collection_info) => {
-                    self.scene_collection_info = collection_info;
-                }
+                iced::Command::none()
             }
         }
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("OBS Control");
-            // if !self.logged_in {
-            //     ui.vertical_centered_justified(|ui| {
-            //         ui.add(egui::TextEdit::singleline(&mut self.addr).hint_text("Ip address"));
-            //         ui.add(egui::TextEdit::singleline(&mut self.port).hint_text("Port"));
-            //         ui.add(egui::TextEdit::singleline(&mut self.pass).hint_text("Password"));
-            //         if ui.button("Log In").clicked() {
-            //             let addr = self.addr.parse::<IpAddr>().expect("failed to parse ip");
-            //             let port = self.port.parse::<u16>().expect("failed to parse port");
-            //             self.action_tx
-            //                 .try_send(Action::LogIn(addr, port, self.pass.clone()))
-            //                 .expect("failed to send login action");
-            //             self.logged_in = true;
-            //         }
-            //     });
-            //     let label = egui::Label::new("Not Logged In");
-            //     ui.add(label).highlight();
-            //     return;
-            // }
-
-            if !self.logged_in {
-                let address: SocketAddr = "127.0.0.1:4455".parse().expect("failed to parse ip");
-                let addr = address.ip();
-                let port = address.port();
-                self.pass = "test1234".to_string();
-                self.action_tx
-                    .try_send(Action::LogIn(addr, port, self.pass.clone()))
-                    .expect("failed to send login action");
-                self.logged_in = true;
-            }
-
-            ui.horizontal_top(|ui| {
-                egui::Grid::new("Sliders").show(ui, |ui| {
-                    ui.vertical_centered_justified(|ui| {
-                        egui::ComboBox::from_id_source("mic")
-                            .selected_text(
-                                self.mic_input_name
-                                    .clone()
-                                    .unwrap_or("Select Mic".to_string()),
-                            )
-                            .show_ui(ui, |ui| {
-                                for input in &self.input_info {
-                                    if !input.kind.contains("input") {
-                                        continue;
-                                    }
-
-                                    ui.selectable_value(
-                                        &mut self.mic_input_name,
-                                        Some(input.name.clone()),
-                                        input.name.clone(),
-                                    );
-                                }
-                                ui.selectable_value(
-                                    &mut self.mic_input_name,
-                                    None,
-                                    "No Mic".to_string(),
-                                );
-                            })
-                    });
-                    ui.vertical_centered_justified(|ui| {
-                        egui::ComboBox::from_id_source("desktop")
-                            .selected_text(
-                                self.desktop_input_name
-                                    .clone()
-                                    .unwrap_or("Select Desktop".to_string()),
-                            )
-                            .show_ui(ui, |ui| {
-                                for input in &self.input_info {
-                                    if !input.kind.contains("output") {
-                                        continue;
-                                    }
-
-                                    ui.selectable_value(
-                                        &mut self.desktop_input_name,
-                                        Some(input.name.clone()),
-                                        input.name.clone(),
-                                    );
-                                }
-                                ui.selectable_value(
-                                    &mut self.desktop_input_name,
-                                    None,
-                                    "No Desktop".to_string(),
-                                );
-                            })
-                    });
-                    ui.end_row();
-
-                    if ui
-                        .add(
-                            egui::Slider::new(&mut self.mic_level, 0.0..=100.0)
-                                .text("Mic Volume")
-                                .orientation(egui::SliderOrientation::Vertical)
-                                .handle_shape(egui::style::HandleShape::Rect { aspect_ratio: 2.0 }),
-                        )
-                        .dragged()
-                    {
-                        if let Some(name) = &self.mic_input_name {
-                            self.action_tx
-                                .try_send(Action::SetVolume(name.clone(), self.mic_level))
-                                .expect("failed to send set volume action");
-                        }
-                    }
-
-                    if ui
-                        .add(
-                            egui::Slider::new(&mut self.desktop_level, 0.0..=100.0)
-                                .text("Desktop Volume")
-                                .orientation(egui::SliderOrientation::Vertical)
-                                .handle_shape(egui::style::HandleShape::Rect { aspect_ratio: 2.0 }),
-                        )
-                        .dragged()
-                    {
-                        if let Some(name) = &self.desktop_input_name {
-                            self.action_tx
-                                .try_send(Action::SetVolume(name.clone(), self.desktop_level))
-                                .expect("failed to send set volume action");
-                        }
-                    }
-                    ui.end_row();
-                    match self.mic_input_name.clone() {
-                        Some(name) => {
-                            let mut mic_button: egui::Button = egui::Button::new("Mute Mic");
-                            if self.mic_muted {
-                                mic_button = egui::Button::new("Unmute Mic");
-                                mic_button = mic_button.fill(egui::Color32::RED);
-                            }
-                            if ui.add(mic_button).clicked() {
-                                self.mic_muted = !self.mic_muted;
-                                if self.mic_muted {
-                                    self.action_tx
-                                        .try_send(Action::SetMute(name, true))
-                                        .expect("failed to send mute action");
-                                } else {
-                                    self.action_tx
-                                        .try_send(Action::SetMute(name, false))
-                                        .expect("failed to send mute action");
-                                }
-                            }
-                        }
-                        None => {
-                            let label = egui::Label::new("No Mic Selected");
-                            ui.add(label).highlight();
-                        }
-                    }
-                    match self.desktop_input_name.clone() {
-                        Some(name) => {
-                            let mut desktop_button: egui::Button =
-                                egui::Button::new("Mute Desktop");
-                            if self.desktop_muted {
-                                desktop_button = egui::Button::new("Unmute desktop");
-                                desktop_button = desktop_button.fill(egui::Color32::RED);
-                            }
-                            if ui.add(desktop_button).clicked() {
-                                self.desktop_muted = !self.desktop_muted;
-                                if self.desktop_muted {
-                                    self.action_tx
-                                        .try_send(Action::SetMute(name, true))
-                                        .expect("failed to send mute action");
-                                } else {
-                                    self.action_tx
-                                        .try_send(Action::SetMute(name, false))
-                                        .expect("failed to send mute action");
-                                }
-                            }
-                        }
-                        None => {
-                            let label = egui::Label::new("No Desktop Selected");
-                            ui.add(label).highlight();
-                        }
-                    }
-
-                    ui.end_row();
-                });
-
-                egui::Grid::new("All purpose buttons").show(ui, |ui| {
-                    for _ in 0..3 {
-                        for _ in 0..3 {
-                            let mut button = egui::Button::new("Button");
-                            button = button.min_size(egui::Vec2::new(100.0, 100.0));
-                            ui.add(button);
-                        }
-                        ui.end_row();
-                    }
-                });
-            });
-        });
     }
+
+    fn view(&self) -> iced::Element<Self::Message> {
+        let mut sliders = iced::widget::row![];
+        for (name, attr) in self.sliders.clone() {
+            sliders = sliders.push(volume_slider_group(
+                name.clone(),
+                attr.level,
+                attr.muted,
+                |msg| Action::VolumeSlider(msg),
+                Vec::new(),
+            ));
+        }
+        container(sliders).into()
+    }
+}
+
+fn volume_slider_group<Message>(
+    name: String,
+    level: f32,
+    muted: bool,
+    on_change: impl Fn(VolumeSliderGroupEvent) -> Message + 'static,
+    device_options: Vec<String>,
+) -> VolumeSliderGroup<Message> {
+    VolumeSliderGroup::new(name, level, muted, on_change, device_options)
+}
+
+struct VolumeSliderGroup<Message> {
+    name: String,
+    level: f32,
+    muted: bool,
+    on_change: Box<dyn Fn(VolumeSliderGroupEvent) -> Message + 'static>,
+    selected_device: Option<String>,
+    device_options: Vec<String>,
+}
+
+impl<Message> VolumeSliderGroup<Message> {
+    pub fn new(
+        name: String,
+        level: f32,
+        muted: bool,
+        on_change: impl Fn(VolumeSliderGroupEvent) -> Message + 'static,
+        device_options: Vec<String>,
+    ) -> Self {
+        VolumeSliderGroup {
+            name,
+            level,
+            muted,
+            on_change: Box::new(on_change),
+            selected_device: None,
+            device_options,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum VolumeSliderGroupMessage {
+    VolumeChanged(f32),
+    MuteToggled(bool),
+    DeviceSelected(String),
+}
+type VolumeSliderGroupEvent = (String, VolumeSliderGroupMessage);
+
+impl<Message> Component<Message, Renderer> for VolumeSliderGroup<Message> {
+    type State = ();
+    type Event = VolumeSliderGroupMessage;
+
+    fn update(&mut self, _state: &mut Self::State, event: Self::Event) -> Option<Message> {
+        match event {
+            VolumeSliderGroupMessage::VolumeChanged(val) => {
+                self.level = val;
+                Some((self.on_change)((
+                    self.name.clone(),
+                    VolumeSliderGroupMessage::VolumeChanged(self.level),
+                )))
+            }
+            VolumeSliderGroupMessage::MuteToggled(muted) => {
+                self.muted = !muted;
+                Some((self.on_change)((
+                    self.name.clone(),
+                    VolumeSliderGroupMessage::MuteToggled(self.muted),
+                )))
+            }
+            VolumeSliderGroupMessage::DeviceSelected(device_name) => {
+                self.selected_device = Some(device_name);
+                Some((self.on_change)((
+                    self.name.clone(),
+                    VolumeSliderGroupMessage::DeviceSelected(self.selected_device.clone()?),
+                )))
+            }
+        }
+    }
+
+    fn view(&self, _state: &Self::State) -> Element<Self::Event, Renderer> {
+        dbg!(self.level, self.muted);
+        let button = |muted| {
+            let apperance = iced_widget::button::Appearance::default();
+            if muted {
+                iced::widget::button("Muted").style(iced::theme::Button::Destructive)
+            } else {
+                iced::widget::button("Live").style(iced::theme::Button::Positive)
+            }
+        };
+
+        iced::widget::container(iced::widget::column![
+            iced::widget::vertical_slider(
+                0.0..=100.0,
+                self.level,
+                VolumeSliderGroupMessage::VolumeChanged
+            ),
+            button(self.muted).on_press(VolumeSliderGroupMessage::MuteToggled(self.muted)),
+            iced_widget::pick_list(
+                self.device_options.clone(),
+                self.selected_device.clone(),
+                VolumeSliderGroupMessage::DeviceSelected
+            )
+            .placeholder("Select device")
+        ])
+        .into()
+    }
+
+    fn operate(
+        &self,
+        _state: &mut Self::State,
+        _operation: &mut dyn iced_widget::core::widget::Operation<Message>,
+    ) {
+    }
+}
+
+impl<'a, Message> From<VolumeSliderGroup<Message>> for Element<'a, Message, Renderer>
+where
+    Message: 'a,
+{
+    fn from(volume_slider_group: VolumeSliderGroup<Message>) -> Self {
+        component(volume_slider_group)
+    }
+}
+
+#[derive(Debug, Clone)]
+enum Action {
+    LogIn(IpAddr, u16, String),
+    VolumeSlider(VolumeSliderGroupEvent),
+}
+
+enum ObsInfo {
+    InputInfo(Vec<Input>),
+    OutputInfo(Vec<Output>),
+    SceneInfo(Scenes),
+    SceneCollectionInfo(SceneCollections),
 }
