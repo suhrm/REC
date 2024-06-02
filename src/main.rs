@@ -114,22 +114,6 @@ struct AppFlags {
     obs_info_rx: tokio::sync::mpsc::Receiver<ObsInfo>,
 }
 
-// #[derive(Clone)]
-// struct ObsInputSource(Input);
-// #[derive(Clone)]
-// struct ObsOutputSource(Output);
-
-// impl std::fmt::Display for ObsOutputSource {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         write!(f, "{}", self.to_string())
-//     }
-// }
-// impl std::fmt::Display for ObsInputSource {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         write!(f, "{}", self.to_string())
-//     }
-// }
-
 #[derive(Debug, Clone)]
 struct SliderState {
     device: Option<String>,
@@ -179,6 +163,32 @@ impl App {
             port: String::new(),
             pass: String::new(),
         }
+    }
+    pub fn log_in<'a>(&'a self) -> iced::Element<'a, Action> {
+        let mut sliders = iced::widget::row![];
+        for (name, attr) in self.sliders.clone() {
+            sliders = sliders.push(volume_slider_group(
+                name.clone(),
+                attr.level,
+                attr.muted,
+                |msg| Action::VolumeSlider(msg),
+                Vec::new(),
+            ));
+        }
+        container(sliders).into()
+    }
+    pub fn logged_in<'a>(&'a self) -> iced::Element<'a, Action> {
+        let mut sliders = iced::widget::row![];
+        for (name, attr) in self.sliders.clone() {
+            sliders = sliders.push(volume_slider_group(
+                name.clone(),
+                attr.level,
+                attr.muted,
+                |msg| Action::VolumeSlider(msg),
+                Vec::new(),
+            ));
+        }
+        container(sliders).into()
     }
 }
 
@@ -242,17 +252,11 @@ impl Application for App {
     }
 
     fn view(&self) -> iced::Element<Self::Message> {
-        let mut sliders = iced::widget::row![];
-        for (name, attr) in self.sliders.clone() {
-            sliders = sliders.push(volume_slider_group(
-                name.clone(),
-                attr.level,
-                attr.muted,
-                |msg| Action::VolumeSlider(msg),
-                Vec::new(),
-            ));
+        if self.logged_in {
+            self.logged_in()
+        } else {
+            todo!("login system")
         }
-        container(sliders).into()
     }
 }
 
@@ -264,6 +268,12 @@ fn volume_slider_group<Message>(
     device_options: Vec<String>,
 ) -> VolumeSliderGroup<Message> {
     VolumeSliderGroup::new(name, level, muted, on_change, device_options)
+}
+
+struct Login {
+    password: Option<String>,
+    user: Option<String>,
+    ip_address: Option<String>,
 }
 
 struct VolumeSliderGroup<Message> {
@@ -335,7 +345,6 @@ impl<Message> Component<Message, Renderer> for VolumeSliderGroup<Message> {
     fn view(&self, _state: &Self::State) -> Element<Self::Event, Renderer> {
         dbg!(self.level, self.muted);
         let button = |muted| {
-            let apperance = iced_widget::button::Appearance::default();
             if muted {
                 iced::widget::button("Muted").style(iced::theme::Button::Destructive)
             } else {
