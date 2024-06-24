@@ -270,10 +270,44 @@ fn volume_slider_group<Message>(
     VolumeSliderGroup::new(name, level, muted, on_change, device_options)
 }
 
-struct Login {
+struct Login<Message> {
     password: Option<String>,
-    user: Option<String>,
     ip_address: Option<String>,
+    on_change: Box<dyn Fn(crate::Action) -> Message + 'static>,
+}
+
+fn login_window<Message>(on_change: impl Fn(crate::Action) -> Message + 'static) -> Login<Message> {
+    Login::new(on_change)
+}
+
+impl<Message> Login<Message> {
+    pub fn new(on_change: impl Fn(crate::Action) -> Message + 'static) -> Self {
+        Self {
+            password: None,
+            ip_address: None,
+			on_change: Box::new(on_change)
+        }
+    }
+}
+
+type Credentials = (String, String);
+
+impl<Message> Component<Message, Renderer> for Login<Message> {
+    type State = ();
+
+    type Event = Credentials;
+
+    fn update(&mut self, state: &mut Self::State, event: Self::Event) -> Option<Message> {
+        todo!()
+    }
+
+    fn view(&self, state: &Self::State) -> iced_widget::core::Element<'_, Self::Event, Renderer> {
+        iced::widget::container(iced::widget::column![
+            iced_widget::text_input("test", "test"),
+            iced_widget::text_input("test", "test"),
+        ])
+        .into()
+    }
 }
 
 struct VolumeSliderGroup<Message> {
