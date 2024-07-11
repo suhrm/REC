@@ -190,6 +190,10 @@ impl App {
         }
         container(sliders).into()
     }
+    pub fn not_logged_in<'a>(&'a self) -> iced::Element<'a, Action> {
+        let login = iced::widget::row![login_window(|msg| Action::LogIn(msg))];
+        container(login).into()
+    }
 }
 
 impl Application for App {
@@ -211,12 +215,16 @@ impl Application for App {
 
     fn update(&mut self, message: Self::Message) -> iced::Command<Self::Message> {
         match message {
-            Action::LogIn(addr, port, pass) => {
-                iced::futures::executor::block_on(
-                    self.app_flags
-                        .action_tx
-                        .send(ObsAction::LogIn(addr, port, pass)),
-                )
+            Action::LogIn(Credentials {
+                ip_addr,
+                port,
+                pass,
+            }) => {
+                iced::futures::executor::block_on(self.app_flags.action_tx.send(ObsAction::LogIn(
+                    ip_addr.unwrap(),
+                    port,
+                    pass,
+                )))
                 .unwrap();
                 iced::Command::none()
             }
@@ -255,7 +263,7 @@ impl Application for App {
         if self.logged_in {
             self.logged_in()
         } else {
-            todo!("login system")
+            self.not_logged_in()
         }
     }
 }
@@ -271,42 +279,87 @@ fn volume_slider_group<Message>(
 }
 
 struct Login<Message> {
-    password: Option<String>,
-    ip_address: Option<String>,
-    on_change: Box<dyn Fn(crate::Action) -> Message + 'static>,
+    password: String,
+    ip_address: String,
+    on_change: Box<dyn Fn(Credentials) -> Message + 'static>,
 }
 
-fn login_window<Message>(on_change: impl Fn(crate::Action) -> Message + 'static) -> Login<Message> {
+fn login_window<Message>(on_change: impl Fn(Credentials) -> Message + 'static) -> Login<Message> {
     Login::new(on_change)
 }
 
 impl<Message> Login<Message> {
-    pub fn new(on_change: impl Fn(crate::Action) -> Message + 'static) -> Self {
+    pub fn new(on_change: impl Fn(Credentials) -> Message + 'static) -> Self {
         Self {
-            password: None,
-            ip_address: None,
-			on_change: Box::new(on_change)
+            password: String::new(),
+            ip_address: String::new(),
+            on_change: Box::new(on_change),
         }
     }
 }
-
-type Credentials = (String, String);
+#[derive(Default, Debug, Clone)]
+struct Credentials {
+    ip_addr: Option<IpAddr>,
+    port: u16,
+    pass: String,
+}
+#[derive(Debug, Clone)]
+enum LoginEvent {
+    Password(String),
+    IpAddress(String),
+    Submit,
+}
 
 impl<Message> Component<Message, Renderer> for Login<Message> {
-    type State = ();
+    type State = Credentials;
 
-    type Event = Credentials;
+    type Event = LoginEvent;
 
     fn update(&mut self, state: &mut Self::State, event: Self::Event) -> Option<Message> {
-        todo!()
+        dbg!(&event);
+        match event {
+            LoginEvent::Password(pass) => {
+                self.password = pass;
+                None
+            }
+            LoginEvent::IpAddress(ip_addr) => {
+                self.ip_address = ip_addr;
+                None
+            }
+            LoginEvent::Submit => {
+                todo!("Parse login stuff");
+                Some((self.on_change)(Credentials {
+                    ip_addr: None,
+                    port: 0,
+                    pass: self.password.clone(),
+                }))
+            }
+        }
     }
 
     fn view(&self, state: &Self::State) -> iced_widget::core::Element<'_, Self::Event, Renderer> {
         iced::widget::container(iced::widget::column![
-            iced_widget::text_input("test", "test"),
-            iced_widget::text_input("test", "test"),
+            iced_widget::text_input("IP-address", self.ip_address.as_str())
+                .on_input(Self::Event::IpAddress),
+            iced_widget::text_input("Password", self.password.as_str())
+                .on_input(Self::Event::Password),
+            iced_widget::button("Login").on_press(Self::Event::Submit)
         ])
         .into()
+    }
+    fn operate(
+        &self,
+        _state: &mut Self::State,
+        _operation: &mut dyn iced_widget::core::widget::Operation<Message>,
+    ) {
+    }
+}
+impl<'a, Message> From<Login<Message>> for Element<'a, Message, Renderer>
+where
+    Message: 'a,
+{
+    fn from(login: Login<Message>) -> Self {
+        component(login)
     }
 }
 
@@ -422,7 +475,7 @@ where
 
 #[derive(Debug, Clone)]
 enum Action {
-    LogIn(IpAddr, u16, String),
+    LogIn(Credentials),
     VolumeSlider(VolumeSliderGroupEvent),
 }
 
