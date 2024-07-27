@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use iced::widget::{component, Component, Container};
+use iced::futures::StreamExt;
 use obws::{
     requests::inputs::Volume,
     responses::{
@@ -14,7 +14,13 @@ use std::{
     thread,
 };
 
-use iced::{widget::container, Element, Renderer, Subscription};
+use iced::{
+    futures::FutureExt, widget::container, Application, Element, Renderer, Sandbox, Subscription,
+};
+use iced_widget::{
+    button::{self, StyleSheet},
+    component, pick_list, text, Component,
+};
 
 mod obws_interface {
     use iced::futures::SinkExt;
@@ -150,6 +156,7 @@ enum ObsAction {
 }
 
 fn main() -> Result<()> {
+    App::run(iced::Settings::with_flags(()))?;
     Ok(())
 }
 
@@ -195,7 +202,7 @@ fn default_sliders() -> HashMap<String, SliderState> {
 }
 
 impl App {
-    fn new() -> Self {
+    fn new(app_flags: ()) -> Self {
         App {
             scene_info: Scenes::default(),
             scene_collection_info: SceneCollections::default(),
@@ -207,18 +214,42 @@ impl App {
             current_view: Views::Login,
         }
     }
-    // pub fn not_logged_in<'a>(&'a self) -> iced::Element<'a, Action> {
-    //     let login = iced::widget::row![login_window(|msg| Action::LogIn(msg))];
-    //     container(login).into()
-    // }
-    // fn send_obs_action(&self, action: ObsAction) -> iced::Task<Action> {
+    pub fn logged_in<'a>(&'a self) -> iced::Element<'a, Action> {
+        let mut sliders = iced::widget::row![];
+        for (name, attr) in self.sliders.clone() {
+            sliders = sliders.push(volume_slider_group(
+                |msg| Action::VolumeSlider(msg),
+                self.sliders.clone().into_keys().collect(),
+            ));
+        }
+        container(sliders).into()
+    }
+    pub fn not_logged_in<'a>(&'a self) -> iced::Element<'a, Action> {
+        let login = iced::widget::row![login_window(|msg| Action::LogIn(msg))];
+        container(login).into()
+    }
+    fn send_obs_action(&self, action: ObsAction) -> iced::Command<Action> {
         let tx = self.obs_action_tx.clone().unwrap();
         let send =
             (|tx: tokio::sync::mpsc::Sender<ObsAction>| async move { tx.send(action).await });
-        iced::Task::perform(send(tx), |err| match err {
+        iced::Command::perform(send(tx), |err| match err {
             Ok(_) => Action::Err(None),
             Err(e) => Action::Err(Some(anyhow!(e))),
         })
+    }
+}
+
+impl Application for App {
+    type Executor = iced::executor::Default;
+
+    type Message = Action;
+
+    type Theme = iced::Theme;
+
+    type Flags = ();
+
+    fn new(flags: Self::Flags) -> (Self, iced::Command<Self::Message>) {
+        (App::new(flags), iced::Command::none())
     }
 
     fn title(&self) -> String {
@@ -228,7 +259,7 @@ impl App {
         obws_interface::subscription().map(Action::ObsInfo)
     }
 
-    fn update(&mut self, message: Self::Message) -> iced::Task<Self::Message> {
+    fn update(&mut self, message: Self::Message) -> iced::Command<Self::Message> {
         match message {
             Action::LogIn(Credentials { sock_addr, pass }) => {
                 self.send_obs_action(ObsAction::LogIn(sock_addr.unwrap(), pass))
@@ -256,7 +287,7 @@ impl App {
                         slider.device = Some(device);
                     }
                 }
-                iced::Task::none()
+                iced::Command::none()
             }
             Action::ObsInfo(info) => {
                 dbg!(&info);
@@ -271,24 +302,20 @@ impl App {
                     ObsInfo::Ready(obs_action_tx) => self.obs_action_tx = Some(obs_action_tx),
                     _ => (),
                 }
-                iced::Task::none()
+                iced::Command::none()
             }
             Action::Err(e) => match e {
                 Some(err) => panic!("{}", err),
-                None => iced::Task::none(),
+                None => iced::Command::none(),
             },
         }
     }
 
-    fn view(&self) -> iced::Element<Action> {
-        let mut sliders = iced::widget::row![];
-        for (name, attr) in self.sliders.clone() {
-            sliders = sliders.push(volume_slider_group(
-                |msg| Action::VolumeSlider(msg),
-                self.sliders.clone().into_keys().collect(),
-            ));
+    fn view(&self) -> iced::Element<Self::Message> {
+        match self.current_view {
+            Views::Login => self.not_logged_in(),
+            Views::LoggedIn => self.logged_in(),
         }
-		sliders.into()
     }
 }
 
@@ -360,15 +387,21 @@ impl<Message> Component<Message, Renderer> for Login<Message> {
         }
     }
 
-    fn view(&self, _state: &Self::State) -> iced::Element<'_, Self::Event, Renderer> {
+    fn view(&self, _state: &Self::State) -> iced_widget::core::Element<'_, Self::Event, Renderer> {
         iced::widget::container(iced::widget::column![
-            iced::widget::text_input("IP-address", self.ip_address.as_str())
+            iced_widget::text_input("IP-address", self.ip_address.as_str())
                 .on_input(Self::Event::IpAddress),
-            iced::widget::text_input("Password", self.password.as_str())
+            iced_widget::text_input("Password", self.password.as_str())
                 .on_input(Self::Event::Password),
-            iced::widget::button("Login").on_press(Self::Event::Submit)
+            iced_widget::button("Login").on_press(Self::Event::Submit)
         ])
         .into()
+    }
+    fn operate(
+        &self,
+        _state: &mut Self::State,
+        _operation: &mut dyn iced_widget::core::widget::Operation<Message>,
+    ) {
     }
 }
 impl<'a, Message> From<Login<Message>> for Element<'a, Message, Renderer>
@@ -444,9 +477,9 @@ impl<Message> Component<Message, Renderer> for VolumeSliderGroup<Message> {
     fn view(&self, state: &Self::State) -> Element<Self::Event, Renderer> {
         let button = |muted| {
             if muted {
-                iced::widget::button("Muted").style(iced::widget::button::danger)
+                iced::widget::button("Muted").style(iced::theme::Button::Destructive)
             } else {
-                iced::widget::button("Live").style(iced::widget::button::success)
+                iced::widget::button("Live").style(iced::theme::Button::Positive)
             }
         };
 
@@ -465,6 +498,13 @@ impl<Message> Component<Message, Renderer> for VolumeSliderGroup<Message> {
             .placeholder("Select device")
         ])
         .into()
+    }
+
+    fn operate(
+        &self,
+        _state: &mut Self::State,
+        _operation: &mut dyn iced_widget::core::widget::Operation<Message>,
+    ) {
     }
 }
 
